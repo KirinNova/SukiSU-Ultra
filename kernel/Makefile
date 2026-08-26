@@ -7,17 +7,12 @@ kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/adb_root.o
 kernelsu-objs += feature/selinux_hide.o
 kernelsu-objs += feature/module_load_filter.o
-kernelsu-objs += hook/setuid_hook.o
 
 ifndef CONFIG_KSU_DISABLE_MANAGER
 kernelsu-objs += manager/apk_sign.o
 kernelsu-objs += manager/throne_tracker.o
+kernelsu-objs += manager/manager.o
 endif
-
-kernelsu-objs += infra/su_mount_ns.o
-kernelsu-objs += infra/seccomp_cache.o
-kernelsu-objs += infra/file_wrapper.o
-kernelsu-objs += infra/event_queue.o
 
 kernelsu-objs += selinux/selinux.o
 kernelsu-objs += selinux/sepolicy.o
@@ -43,57 +38,58 @@ ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 ccflags-y += -I$(srctree)/$(src) -I$(srctree)/$(src)/include
 ccflags-y += -I$(src) -I$(src)/include
 
-obj-$(CONFIG_KSU) += kernelsu.o
+obj-$(CONFIG_KSU) := ksu.o
 
-REPO_NAME := ReSukiSU
+ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
+ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
 
-KDIR := $(KDIR)
-
-GIT_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
-
-KSU_SRC := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-
-LOCAL_GIT_EXISTS := $(shell test -e $(KSU_SRC)/../.git && echo 1 || echo 0)
-
-ifeq ($(LOCAL_GIT_EXISTS),0)
-$(info -- Can't find $(REPO_NAME) git submodule!)
-$(info -- If you are using bazel to build this kernel,)
-$(info -- Please go to Kbuild and change KSU_SRC to the absolute path of the KSU kernel folder.)
-$(error You should use $(REPO_NAME) as a git submodule instead of copying code directly)
+ifeq ($(filter /%,$(src)),)
+KSU_KERNEL_DIR := $(srctree)/$(src)
+else
+KSU_KERNEL_DIR := $(src)
 endif
 
-ifdef KBUILD_EXTMOD
-include $(KSU_SRC)/tools/ddk_compatible.mk
+ifeq ($(CONFIG_KSU_SUSFS), y)
+## As we are building gki only, no KBUILD_EXTMOD is needed
+## Since there is still a build error for 6.12 as $(src) returns absolute path, so here we just hardcode it
+ccflags-y += -I$(srctree)/drivers/kernelsu -I$(srctree)/drivers/kernelsu/include
+else
+ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
 endif
 
-$(shell cd $(KSU_SRC); [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow)
-KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)
-KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)
+MDIR    := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-KSU_TAG_NAME    := $(shell cd $(KSU_SRC); $(GIT_BIN) describe --abbrev=0 --tags 2>/dev/null || echo "v4.1.0")
-KSU_COMMIT_SHA  := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
-ifneq ($(shell cd $(KSU_SRC); $(GIT_BIN) diff-index --quiet HEAD; echo $$?),0)
-KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
-endif
-KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")
+REPO_OWNER  := SukiSU-Ultra
+REPO_NAME   := SukiSU-Ultra
+REPO_BRANCH := main
 
-# call subst to process placeholders
-KSU_VERSION_FULL := $(subst ",,$(CONFIG_KSU_FULL_NAME_FORMAT))
-KSU_VERSION_FULL := $(subst %TAG_NAME%,$(KSU_TAG_NAME),$(KSU_VERSION_FULL))
-KSU_VERSION_FULL := $(subst %COMMIT_SHA%,$(KSU_COMMIT_SHA),$(KSU_VERSION_FULL))
-KSU_VERSION_FULL := $(subst %REPO_NAME%,$(REPO_NAME),$(KSU_VERSION_FULL))
-KSU_VERSION_FULL := $(subst %BRANCH_NAME%,$(KSU_BRANCH_NAME),$(KSU_VERSION_FULL))
-KSU_VERSION_FULL := $(subst %KSU_VERSION%,$(KSU_VERSION),$(KSU_VERSION_FULL))
+VERSION_BASE    := 40000
+VERSION_OFFSET  := 2815
 
-$(info -- $(REPO_NAME) version code: $(KSU_VERSION))
-$(info -- $(REPO_NAME) version name: $(KSU_VERSION_FULL))
+GIT_BIN  := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
+CURL_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin curl
+
+KSU_SRC := $(if $(filter $(srctree),$(src)),$(src),$(srctree)/$(src))
+KSU_SRC := $(if $(wildcard $(KSU_SRC)/../.git),$(KSU_SRC),$(MDIR))
+
+git_short_sha    = $(shell cd $(KSU_SRC) && $(GIT_BIN) rev-parse --short=8 HEAD 2>/dev/null)
+git_branch       = $(shell cd $(KSU_SRC) && $(GIT_BIN) rev-parse --abbrev-ref HEAD 2>/dev/null)
+git_commit_count = $(shell cd $(KSU_SRC) && $(GIT_BIN) rev-list --count $(REPO_BRANCH) 2>/dev/null)
+git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+
+$(shell cd $(KSU_SRC) 2>/dev/null && [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow 2>/dev/null)
+
+GITHUB_API_BASE  := https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)
+KSU_GITHUB_VER   := $(shell $(CURL_BIN) -s "$(GITHUB_API_BASE)/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
+GITHUB_COMMITS   := $(shell $(CURL_BIN) -sI "$(GITHUB_API_BASE)/commits?sha=$(REPO_BRANCH)&per_page=1" 2>/dev/null | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p')
+LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
+KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)
+VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.1.2)
+KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)
+$(info -- $(REPO_NAME) version: $(KSU_VERSION) [$(KSU_VERSION_FULL)])
 
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
 ccflags-y += -DKSU_VERSION_FULL=\"$(KSU_VERSION_FULL)\"
-
-ifdef CONFIG_KSU_MULTI_MANAGER_SUPPORT
-$(info -- Supported Unofficial Manager: MKSU, RKSU, KOWSU, SukiSU-Ultra, ReSukiSU )
-endif
 
 KERNEL_VERSION := $(VERSION).$(PATCHLEVEL)
 KERNEL_TYPE := Non-GKI
@@ -109,126 +105,93 @@ endif
 $(info -- KERNEL_VERSION: $(KERNEL_VERSION))
 $(info -- KERNEL_TYPE: $(KERNEL_TYPE))
 
-ifeq ($(CONFIG_ARM64),y)
-  kernelsu-objs += hook/arm64/patch_memory.o
-else ifeq ($(CONFIG_X86_64),y)
-  kernelsu-objs += hook/x86_64/patch_memory.o
-else ifeq ($(CONFIG_ARM),y)
-  kernelsu-objs += hook/arm32/patch_memory.o
+ifeq ($(CONFIG_KSU_SUSFS), y)
+$(info -- $(REPO_NAME): using SUSFS_INLINE_HOOK)
 else
-  ifeq ($(CONFIG_KSU),y)
-    $(info -- Unsupported arch)
-    $(error $(REPO_NAME) only support arm64-v8a, armeabi-v7a, x86-64)
-  endif
+$(info -- $(REPO_NAME): using Unknown)
 endif
 
-kernelsu-objs += infra/symbol_resolver.o
-
-ifeq ($(KERNEL_TYPE), GKI 2.0)
-  kernelsu-objs += hook/lsm_hook_magic.o
-endif
-
-ifeq ($(CONFIG_KSU),y)
-  ifneq ($(CONFIG_KALLSYMS_ALL),y)
-    include $(KSU_SRC)/tools/static_export_check.mk
-  endif
-endif
-
-ifdef CONFIG_KSU_TRACEPOINT_HOOK
-  $(info -- $(REPO_NAME): using Tracepoint Syscall Redirect Hook)
-
-  ifndef CONFIG_KSU_DISABLE_MANAGER
-    kernelsu-objs += manager/pkg_observer.o
-  endif
-
-  kernelsu-objs += hook/syscall_hook_manager.o
-  kernelsu-objs += hook/syscall_event_bridge.o
-  kernelsu-objs += hook/tp_marker.o
-  ifeq ($(CONFIG_ARM64),y)
-    kernelsu-objs += hook/arm64/syscall_hook.o
-  else ifeq ($(CONFIG_X86_64),y)
-    kernelsu-objs += hook/x86_64/syscall_hook.o
-  else
-    ifeq ($(CONFIG_KSU), y)
-      $(info -- Unsupported arch)
-      $(info -- Only arm64-v8a and x86-64 support for tracepoint hook)
-      $(error Unsupported arch for tracepoint hook)
-    endif
-  endif
-  ifeq ($(CONFIG_KSU),y)
-    ifneq ($(KERNEL_TYPE), GKI 2.0)
-      $(info -- $(REPO_NAME) TP Hooks are only supported on GKI 2.0 kernels.)
-      $(info -- Current Kernel Type: $(KERNEL_TYPE))
-      $(info -- If you really want to continue, go to Kbuild and comment out this warning.)
-      $(info -- Usually, this error occurs because you forgot to enable some kernel configurations.)
-      $(info -- Read: https://resukisu.github.io/guide/manual-integrate.html)
-      $(error TP hooks are incompatible with Non-GKI/GKI 1.0 kernels.)
-    endif
-  endif
-
-else ifdef CONFIG_KSU_MANUAL_HOOK
-  $(info -- $(REPO_NAME): using Manual Hook)
-  include $(KSU_SRC)/tools/manual_hook_check.mk
-else ifdef CONFIG_KSU_SUSFS
-  $(info -- $(REPO_NAME): using SuSFS Inline hook)
-  include $(KSU_SRC)/tools/inline_hook_check.mk
-  include $(KSU_SRC)/tools/susfs_compat.mk
-  ifeq ($(shell test -e $(srctree)/fs/susfs.c; echo $$?),0)
-    $(eval SUSFS_VERSION=$(shell cat $(srctree)/include/linux/susfs.h | grep -E '^#define SUSFS_VERSION' | cut -d' ' -f3 | sed 's/"//g'))
-    $(info )
-    $(info -- SUSFS_VERSION: $(SUSFS_VERSION))
-  else
-    $(info -- You have not integrated susfs in your kernel yet.)
-    $(info -- Read: https://gitlab.com/simonpunk/susfs4ksu)
-    $(error You should integrate susfs in your kernel.)
-  endif
+ifeq ($(CONFIG_KPM), y)
+$(info -- KPM is enabled)
 else
-  ifeq ($(CONFIG_KSU),y)
-    $(error Unsupported hook method)
-  endif
+$(info -- KPM is disabled)
 endif
 
-ifndef CONFIG_KSU_TRACEPOINT_HOOK
-  # For old kernel, pkg observer maybe let system freeze
-  # https://github.com/ReSukiSU/ReSukiSU/issues/82#issuecomment-4015396974
-  #
-  # 6.7- we use lsm_hooks to call ksu_handle_rename
-  # 6.8+ we use pkg_observer to track_throne
-  ifeq ($(shell test \( $(VERSION) -lt 6 -o \( $(VERSION) -eq 6 -a $(PATCHLEVEL) -lt 8 \) \) && echo y),y)
-      kernelsu-objs += hook/lsm_hooks.o
-  else
-    ifndef CONFIG_KSU_DISABLE_MANAGER
-      kernelsu-objs += manager/pkg_observer.o
-    endif
-  endif
+# Check new vfs_getattr()
+ifeq ($(shell grep -A1 "^int vfs_getattr" $(srctree)/fs/stat.c | grep -q "query_flags" ; echo $$?),0)
+ccflags-y += -DKSU_HAS_NEW_VFS_GETATTR
 endif
 
-include $(KSU_SRC)/tools/kernel_compat.mk
-
-# Custom Signs
-ifdef KSU_EXPECTED_SIZE
-ccflags-y += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
-$(info -- Custom KernelSU Manager signature size: $(KSU_EXPECTED_SIZE))
+ifeq ($(shell grep -q " current_sid(void)" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_CURRENT_SID
 endif
 
-ifdef KSU_EXPECTED_HASH
-ccflags-y += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
-$(info -- Custom KernelSU Manager signature hash: $(KSU_EXPECTED_HASH))
+ifeq ($(shell grep -q "struct selinux_state " $(srctree)/security/selinux/include/security.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_SELINUX_STATE
 endif
 
-ifdef KSU_EXPECTED_PR_BUILD_SIZE
-  ifndef KSU_EXPECTED_PR_BUILD_HASH
-    $(error KSU_EXPECTED_PR_BUILD_HASH must be set when KSU_EXPECTED_PR_BUILD_SIZE is set)
-  endif
-  ccflags-y += -DEXPECTED_PR_BUILD_SIZE=$(KSU_EXPECTED_PR_BUILD_SIZE)
-  ccflags-y += -DEXPECTED_PR_BUILD_HASH=\"$(KSU_EXPECTED_PR_BUILD_HASH)\"
-  $(info -- KernelSU Manager Pull Request signature size: $(KSU_EXPECTED_PR_BUILD_SIZE))
-  $(info -- KernelSU Manager Pull Request signature hash: $(KSU_EXPECTED_PR_BUILD_HASH))
+ifeq ($(shell grep -q "strncpy_from_user_nofault" $(srctree)/include/linux/uaccess.h; echo $$?),0)
+ccflags-y += -DKSU_HAS_STRNCPY_FROM_USER_NOFAULT
+endif
+
+ifeq ($(shell grep -q "atomic_t\s\+filter_count" $(srctree)/include/linux/seccomp.h; echo $$?),0)
+ccflags-y += -DKSU_OPTIONAL_SECCOMP_FILTER_CNT
+endif
+
+# some old kernel backport this, check if put_seccomp_filter still exist
+ifneq ($(shell grep -wq "put_seccomp_filter" $(srctree)/kernel/seccomp.c $(srctree)/include/linux/seccomp.h; echo $$?),0)
+ifeq ($(shell grep -wq "seccomp_filter_release" $(srctree)/kernel/seccomp.c $(srctree)/include/linux/seccomp.h; echo $$?),0)
+ccflags-y += -DKSU_OPTIONAL_SECCOMP_FILTER_RELEASE
+endif
+endif
+
+ifeq ($(shell grep -q "^DEFINE_RWLOCK(policy_rwlock);" $(srctree)/security/selinux/ss/services.c; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK
+endif
+
+ifeq ($(shell grep -q "cpus_ptr;" $(srctree)/include/linux/sched.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_BACKPORTED_CPUS_PTR
+endif
+
+ifeq ($(shell grep -q "selinux_inode" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+ccflags-y += -DKSU_HAS_SELINUX_INODE
+endif
+
+ifeq ($(shell grep -q "selinux_cred" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+ccflags-y += -DKSU_HAS_SELINUX_CRED
+endif
+
+ifeq ($(shell grep -q "struct type_datum \*\*type_val_to_struct;" $(srctree)/security/selinux/ss/policydb.h; echo $$?),0)
+ccflags-y += -DKSU_TYPE_VAL_TO_STRUCT
+endif
+
+# half-assed-backport from 5.1
+ifeq ($(shell grep -q "struct type_datum \*\*type_val_to_struct_array;" $(srctree)/security/selinux/ss/policydb.h; echo $$?),0)
+ccflags-y += -DKSU_TYPE_VAL_TO_STRUCT_ARRAY
+endif
+
+# https://github.com/torvalds/linux/commit/11276d5306b8e5b438a36bbff855fe792d7eaa61
+ifeq ($(shell grep -q "DEFINE_STATIC_KEY_TRUE" $(srctree)/include/linux/jump_label.h 2>/dev/null; echo $$?),0)
+$(info -- $(REPO_NAME)/compat: modern static_key_interface found)
+ccflags-y += -DKSU_HAS_MODERN_STATIC_KEY_INTERFACE
 endif
 
 ifdef KSU_MANAGER_PACKAGE
 ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
 $(info -- KernelSU Manager package name: $(KSU_MANAGER_PACKAGE))
 endif
+
+## For susfs stuff ##
+ifeq ($(shell test -e $(srctree)/fs/susfs.c; echo $$?),0)
+$(eval SUSFS_VERSION=$(shell cat $(srctree)/include/linux/susfs.h | grep -E '^#define SUSFS_VERSION' | cut -d' ' -f3 | sed 's/"//g'))
+$(info )
+$(info -- SUSFS_VERSION: $(SUSFS_VERSION))
+else
+$(info -- You have not integrated susfs in your kernel yet.)
+$(info -- Read: https://gitlab.com/simonpunk/susfs4ksu)
+endif
+
+ccflags-y += -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat -Wno-missing-prototypes
+ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
 
 # Keep a new line here!! Because someone may append config

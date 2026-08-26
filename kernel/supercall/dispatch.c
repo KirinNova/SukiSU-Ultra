@@ -267,7 +267,7 @@ static int do_uid_should_umount(void __user *arg)
 
 static int do_get_manager_appid(void __user *arg)
 {
-    uid_t uid = ksu_get_manager_uid();
+    uid_t uid = ksu_get_manager_appid();
     if (copy_to_user(arg, &uid, sizeof(uid))) {
         pr_err("get_manager_appid: copy_to_user failed\n");
         return -EFAULT;

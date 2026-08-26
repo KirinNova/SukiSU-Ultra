@@ -82,6 +82,20 @@ static inline void ksu_destroy_policydb(struct policydb *p)
     }
 }
 
+#ifndef find_kernel_symbol_exact
+static void *find_kernel_symbol_exact(const char *name)
+{
+    return (void *)kallsyms_lookup_name(name);
+}
+#endif
+
+#ifndef ksu_patch_text
+static int ksu_patch_text(unsigned long addr, const void *data, size_t size)
+{
+    return 0;
+}
+#endif
+
 #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
 enum sel_inos {
     SEL_ROOT_INO = 2,

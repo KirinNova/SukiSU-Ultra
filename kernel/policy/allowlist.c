@@ -123,9 +123,6 @@ static bool profile_valid(struct app_profile *profile)
     return true;
 }
 
-/* 手动补丁：增加 migrate_profile 前置声明 */
-static void migrate_profile(u32 version, struct app_profile *profile);
-
 static void release_perm_data(struct kref *ref)
 {
     struct perm_data *p = container_of(ref, struct perm_data, ref);
@@ -141,16 +138,6 @@ int ksu_set_app_profile(struct app_profile *profile)
 {
     struct perm_data *p, *np;
     int result = 0;
-
-    /* 手动补丁：兼容并迁移旧版本（v2/v3）的 app_profile[cite: 1] */
-#if KSU_APP_PROFILE_VER == 4
-    if (profile && (profile->version == 2 || profile->version == 3)) {
-        u32 old_version = profile->version;
-        migrate_profile(old_version, profile);
-        pr_info("migrated incoming app profile v%d to v%d: key=%s uid=%d\n",
-                old_version, KSU_APP_PROFILE_VER, profile->key, profile->curr_uid);
-    }
-#endif
 
     if (!profile_valid(profile)) {
         pr_err("Failed to set app profile: invalid profile!\n");

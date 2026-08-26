@@ -89,6 +89,8 @@ static inline bool forbid_system_uid(uid_t uid)
     return uid < SHELL_UID && uid != SYSTEM_UID;
 }
 
+static void migrate_profile(u32 version, struct app_profile *profile);
+
 static bool profile_valid(struct app_profile *profile)
 {
     if (!profile) {

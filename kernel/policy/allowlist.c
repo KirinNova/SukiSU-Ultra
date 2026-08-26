@@ -10,7 +10,7 @@ static DEFINE_MUTEX(allowlist_mutex);
 static struct root_profile default_root_profile;
 static struct non_root_profile default_non_root_profile;
 
-static void __init init_default_profiles()
+static void __init init_default_profiles(void)
 {
     kernel_cap_t full_cap = CAP_FULL_SET;
 
@@ -106,7 +106,6 @@ static bool profile_valid(struct app_profile *profile)
     }
 
     if (profile->allow_su) {
-#ifndef CONFIG_KSU_DISABLE_POLICY
         if (profile->rp_config.profile.groups_count > KSU_MAX_GROUPS) {
             pr_err("invalid groups_count in app_profile: %s\n", profile->key);
             return false;
@@ -119,7 +118,6 @@ static bool profile_valid(struct app_profile *profile)
             pr_err("invalid selinux_domain in app_profile: %s\n", profile->key);
             return false;
         }
-#endif
     }
 
     return true;
@@ -145,17 +143,6 @@ int ksu_set_app_profile(struct app_profile *profile)
         pr_err("Failed to set app profile: invalid profile!\n");
         return -EINVAL;
     }
-
-#ifdef CONFIG_KSU_DISABLE_POLICY
-    if (profile->allow_su) {
-        profile->rp_config.use_default = true;
-        memset(profile->rp_config.template_name, 0, sizeof(profile->rp_config.template_name));
-        memset(&profile->rp_config.profile, 0, sizeof(profile->rp_config.profile));
-    } else {
-        profile->nrp_config.use_default = true;
-        memset(&profile->nrp_config.profile, 0, sizeof(profile->nrp_config.profile));
-    }
-#endif
 
     // only allow default non root profile
     if (unlikely(profile->curr_uid == KSU_APP_PROFILE_PRESERVE_UID && strcmp(profile->key, "$") != 0)) {
@@ -233,7 +220,7 @@ bool __ksu_is_allow_uid(uid_t uid)
         return false;
     }
 
-    if (unlikely(ksu_is_manager_uid(uid))) {
+    if (unlikely(is_uid_manager(uid))) {
         // manager is always allowed!
         return true;
     }
@@ -267,8 +254,7 @@ bool ksu_uid_should_umount(uid_t uid)
 {
     struct app_profile *profile;
     bool res;
-
-    if (unlikely(ksu_is_manager_uid(uid))) {
+    if (likely(ksu_is_manager_appid_valid()) && unlikely(ksu_get_manager_appid() == uid % PER_USER_RANGE)) {
         // we should not umount on manager!
         return false;
     }
@@ -276,9 +262,7 @@ bool ksu_uid_should_umount(uid_t uid)
         // we should not umount for webview zygote
         return false;
     }
-#ifdef CONFIG_KSU_DISABLE_POLICY
-    return !__ksu_is_allow_uid(uid);
-#else
+
     rcu_read_lock();
     profile = ksu_get_app_profile(uid);
     if (!profile) {
@@ -300,7 +284,6 @@ bool ksu_uid_should_umount(uid_t uid)
     if (profile)
         ksu_put_app_profile(profile);
     return res;
-#endif
 }
 
 void ksu_put_app_profile(struct app_profile *profile)
@@ -311,15 +294,11 @@ void ksu_put_app_profile(struct app_profile *profile)
 
 struct root_profile *ksu_get_root_profile(uid_t uid)
 {
-#ifdef CONFIG_KSU_DISABLE_POLICY
-    (void)uid;
-    return &default_root_profile;
-#else
     struct perm_data *p = NULL;
     struct root_profile *res;
 
     rcu_read_lock();
-    if (ksu_is_manager_uid(uid)) {
+    if (is_uid_manager(uid)) {
         goto use_default;
     }
 
@@ -348,7 +327,6 @@ retry:
 
     rcu_read_unlock();
     return res;
-#endif
 }
 
 void ksu_put_root_profile(struct root_profile *profile)
@@ -367,7 +345,7 @@ bool ksu_get_allow_list(int *array, u16 length, u16 *out_length, u16 *out_total,
     rcu_read_lock();
     hash_for_each_rcu (allow_list, iter, p, list) {
         // pr_info("get_allow_list uid: %d allow: %d\n", p->uid, p->allow);
-        if (p->profile.allow_su == allow && !ksu_is_manager_uid(p->profile.curr_uid)) {
+        if (p->profile.allow_su == allow && !is_uid_manager(p->profile.curr_uid)) {
             if (j < length) {
                 array[j++] = p->profile.curr_uid;
             }
@@ -385,6 +363,77 @@ bool ksu_get_allow_list(int *array, u16 length, u16 *out_length, u16 *out_total,
     return true;
 }
 
+// TODO: move to kernel thread or work queue
+static void do_persistent_allow_list(struct callback_head *_cb)
+{
+    u32 magic = FILE_MAGIC;
+    u32 version = FILE_FORMAT_VERSION;
+    struct perm_data *p = NULL;
+    loff_t off = 0;
+    int i;
+
+    const struct cred *saved = override_creds(ksu_cred);
+    struct file *fp = filp_open(KERNEL_SU_ALLOWLIST, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(fp)) {
+        pr_err("save_allow_list create file failed: %ld\n", PTR_ERR(fp));
+        goto out;
+    }
+
+    // store magic and version
+    if (kernel_write(fp, &magic, sizeof(magic), &off) != sizeof(magic)) {
+        pr_err("save_allow_list write magic failed.\n");
+        goto close_file;
+    }
+
+    if (kernel_write(fp, &version, sizeof(version), &off) != sizeof(version)) {
+        pr_err("save_allow_list write version failed.\n");
+        goto close_file;
+    }
+
+    mutex_lock(&allowlist_mutex);
+    hash_for_each (allow_list, i, p, list) {
+        pr_info("save allow list, name: %s uid :%d, allow: %d\n", p->profile.key, p->profile.curr_uid,
+                p->profile.allow_su);
+
+        kernel_write(fp, &p->profile, sizeof(p->profile), &off);
+    }
+    mutex_unlock(&allowlist_mutex);
+
+close_file:
+    filp_close(fp, 0);
+out:
+    revert_creds(saved);
+    kfree(_cb);
+}
+
+void ksu_persistent_allow_list(void)
+{
+    struct task_struct *tsk;
+
+    rcu_read_lock();
+    tsk = get_pid_task(find_vpid(1), PIDTYPE_PID);
+    if (!tsk) {
+        rcu_read_unlock();
+        pr_err("save_allow_list find init task err\n");
+        return;
+    }
+    rcu_read_unlock();
+
+    struct callback_head *cb = kzalloc(sizeof(struct callback_head), GFP_KERNEL);
+    if (!cb) {
+        pr_err("save_allow_list alloc cb err\b");
+        goto put_task;
+    }
+    cb->func = do_persistent_allow_list;
+    if (task_work_add(tsk, cb, TWA_RESUME)) {
+        kfree(cb);
+        pr_warn("save_allow_list add task_work failed\n");
+    }
+
+put_task:
+    put_task_struct(tsk);
+}
+
 static void migrate_profile(u32 version, struct app_profile *profile)
 {
     char *domain;
@@ -395,9 +444,7 @@ static void migrate_profile(u32 version, struct app_profile *profile)
         if (profile->allow_su) {
             domain = profile->rp_config.profile.selinux_domain;
             if (strncmp(domain, "u:r:su:s0", domain_len) == 0) {
-                memset(domain, 0, domain_len);
-                // domain_len - 1 as implicit null termination
-                strncpy(domain, KSU_DEFAULT_SELINUX_DOMAIN, domain_len - 1);
+                strscpy_pad(domain, KSU_DEFAULT_SELINUX_DOMAIN, domain_len);
                 pr_info("migrated domain of profile: %s\n", profile->key);
             }
         }
@@ -412,49 +459,7 @@ static void migrate_profile(u32 version, struct app_profile *profile)
     profile->version = KSU_APP_PROFILE_VER;
 }
 
-void do_persistent_allow_list(void *unused)
-{
-    u32 magic = FILE_MAGIC;
-    u32 version = FILE_FORMAT_VERSION;
-    struct perm_data *p = NULL;
-    struct file *fp = NULL;
-    loff_t off = 0;
-    int i;
-
-    const struct cred *saved = override_creds(ksu_cred);
-    fp = filp_open(KERNEL_SU_ALLOWLIST, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (IS_ERR(fp)) {
-        pr_err("save_allow_list create file failed: %ld\n", PTR_ERR(fp));
-        revert_creds(saved);
-        return;
-    }
-
-    // store magic and version
-    if (ksu_kernel_write_compat(fp, &magic, sizeof(magic), &off) != sizeof(magic)) {
-        pr_err("save_allow_list write magic failed.\n");
-        goto out;
-    }
-
-    if (ksu_kernel_write_compat(fp, &version, sizeof(version), &off) != sizeof(version)) {
-        pr_err("save_allow_list write version failed.\n");
-        goto out;
-    }
-
-    mutex_lock(&allowlist_mutex);
-    hash_for_each (allow_list, i, p, list) {
-        pr_info("save allow list, name: %s uid :%d, allow: %d\n", p->profile.key, p->profile.curr_uid,
-                p->profile.allow_su);
-
-        ksu_kernel_write_compat(fp, &p->profile, sizeof(p->profile), &off);
-    }
-    mutex_unlock(&allowlist_mutex);
-
-out:
-    revert_creds(saved);
-    filp_close(fp, 0);
-}
-
-void do_ksu_load_allow_list(void *unused)
+void ksu_load_allow_list(void)
 {
     loff_t off = 0;
     ssize_t ret = 0;
@@ -471,13 +476,13 @@ void do_ksu_load_allow_list(void *unused)
     }
 
     // verify magic
-    if (ksu_kernel_read_compat(fp, &magic, sizeof(magic), &off) != sizeof(magic) || magic != FILE_MAGIC) {
+    if (kernel_read(fp, &magic, sizeof(magic), &off) != sizeof(magic) || magic != FILE_MAGIC) {
         pr_err("allowlist file invalid: %d!\n", magic);
         goto exit;
     }
 
     // get file version
-    if (ksu_kernel_read_compat(fp, &version, sizeof(version), &off) != sizeof(version)) {
+    if (kernel_read(fp, &version, sizeof(version), &off) != sizeof(version)) {
         pr_err("allowlist read version: %d failed\n", version);
         goto exit;
     }
@@ -495,7 +500,7 @@ void do_ksu_load_allow_list(void *unused)
     while (true) {
         struct app_profile profile;
 
-        ret = ksu_kernel_read_compat(fp, &profile, app_profile_size, &off);
+        ret = kernel_read(fp, &profile, app_profile_size, &off);
 
         if (ret != app_profile_size) {
             if (ret != 0)
@@ -519,32 +524,18 @@ exit:
     filp_close(fp, 0);
 }
 
-void ksu_persistent_allow_list(void)
-{
-    ksu_run_in_init_if_possible(do_persistent_allow_list, NULL);
-}
-
-void ksu_load_allow_list(void)
-{
-#ifdef CONFIG_KSU_DISABLE_POLICY
-    pr_info("allowlist load skipped because policy is disabled\n");
-    return;
-#endif
-    ksu_run_in_init_if_possible(do_ksu_load_allow_list, NULL);
-}
-
 void ksu_prune_allowlist(bool (*is_uid_valid)(uid_t, char *, void *), void *data)
 {
     struct perm_data *np = NULL;
     struct hlist_node *tmp;
     int i;
-    bool modified = false;
 
     if (!ksu_boot_completed) {
         pr_info("boot not completed, skip prune\n");
         return;
     }
 
+    bool modified = false;
     mutex_lock(&allowlist_mutex);
     hash_for_each_safe (allow_list, i, tmp, np, list) {
         uid_t uid = np->profile.curr_uid;

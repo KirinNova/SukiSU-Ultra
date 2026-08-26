@@ -52,17 +52,12 @@ void on_post_fs_data(void)
 
     ksu_load_allow_list();
     ksu_observer_init();
-    /* packages.list may already exist before the observer is installed. */
-    if (unlikely(!ksu_is_manager_appid_valid())) {
-        track_throne(false);
-        // sanity check, this may influence the performance
-        stop_input_hook();
-        ksu_selinux_hide_handle_post_fs_data();
-    }
-} 
+    // sanity check, this may influence the performance
+    stop_input_hook();
+    ksu_selinux_hide_handle_post_fs_data();
+}
 
 extern void ext4_unregister_sysfs(struct super_block *sb);
-
 int nuke_ext4_sysfs(const char *mnt)
 {
     struct path path;

@@ -67,6 +67,21 @@ __maybe_static struct page *fake_status = NULL;
 static struct mutex *ksu_selinux_status_lock = NULL;
 __maybe_static void initialize_fake_status(void);
 
+#ifndef KSU_FEATURE_SELINUX_HIDE
+#define KSU_FEATURE_SELINUX_HIDE 99
+#endif
+
+#ifndef ksu_late_loaded
+bool ksu_late_loaded = false;
+#endif
+
+static inline void ksu_destroy_policydb(struct policydb *p)
+{
+    if (p) {
+        kfree(p);
+    }
+}
+
 #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
 enum sel_inos {
     SEL_ROOT_INO = 2,

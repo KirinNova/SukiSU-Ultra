@@ -1,75 +1,99 @@
 #!/bin/sh
 set -eu
 
-GKI_ROOT=$(pwd)
+# 获取内核根目录路径
+KERNEL_ROOT=$(pwd)
 
 display_usage() {
-    echo "Usage: $0 [--cleanup | <commit-or-tag>]"
-    echo "  --cleanup:              Cleans up previous modifications made by the script."
-    echo "  <commit-or-tag>:        Sets up or updates the KernelSU to specified tag or commit."
-    echo "  -h, --help:             Displays this usage information."
-    echo "  (no args):              Sets up or updates the KernelSU environment to the latest tagged version."
+    echo "Usage: $0 [--cleanup]"
+    echo "  --cleanup:          Cleans up previous modifications made by the script."
+    echo "  -h, --help:         Displays this usage information."
+    echo "  (no args):          Sets up SukiSU-Ultra builtin environment from KirinNova's repository."
 }
 
 initialize_variables() {
-    if test -d "$GKI_ROOT/common/drivers"; then
-         DRIVER_DIR="$GKI_ROOT/common/drivers"
-    elif test -d "$GKI_ROOT/drivers"; then
-         DRIVER_DIR="$GKI_ROOT/drivers"
-    else
-         echo '[ERROR] "drivers/" directory not found.'
-         exit 127
-    fi
+    # 适配非GKI传统内核的 drivers 目录路径
+    if test -d "$KERNEL_ROOT/drivers"; then
+        DRIVER_DIR="$KERNEL_ROOT/drivers"
+    else
+        echo '[ERROR] "drivers/" directory not found in current path.'
+        echo '[HINT] Please run this script from your kernel source root directory.'
+        exit 127
+    fi
 
-    DRIVER_MAKEFILE=$DRIVER_DIR/Makefile
-    DRIVER_KCONFIG=$DRIVER_DIR/Kconfig
+    DRIVER_MAKEFILE=$DRIVER_DIR/Makefile
+    DRIVER_KCONFIG=$DRIVER_DIR/Kconfig
 }
 
-# Reverts modifications made by this script
+# 清理脚本引入的更改和软链接
 perform_cleanup() {
-    echo "[+] Cleaning up..."
-    [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] Symlink removed."
-    grep -q "kernelsu" "$DRIVER_MAKEFILE" && sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] Makefile reverted."
-    grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG" && sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] Kconfig reverted."
-    if [ -d "$GKI_ROOT/KernelSU" ]; then
-        rm -rf "$GKI_ROOT/KernelSU" && echo "[-] KernelSU directory deleted."
-    fi
+    echo "[+] Cleaning up SukiSU-Ultra builtin..."
+    [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] Symlink removed."
+    if grep -q "kernelsu" "$DRIVER_MAKEFILE"; then
+        sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] Makefile reverted."
+    fi
+    if grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG"; then
+        sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] Kconfig reverted."
+    fi
+    if [ -d "$KERNEL_ROOT/KernelSU" ]; then
+        rm -rf "$KERNEL_ROOT/KernelSU" && echo "[-] KernelSU directory deleted."
+    fi
+    echo "[+] Cleanup completed."
 }
 
-# Sets up or update KernelSU environment
+# 克隆并配置 SukiSU-Ultra builtin 分支
 setup_kernelsu() {
-    echo "[+] Setting up KernelSU..."
-    test -d "$GKI_ROOT/KernelSU" || git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU && echo "[+] Repository cloned."
-    cd "$GKI_ROOT/KernelSU"
-    git stash && echo "[-] Stashed current changes."
-    if [ "$(git status | grep -Po 'v\d+(\.\d+)*' | head -n1)" ]; then
-        git checkout main && echo "[-] Switched to main branch."
-    fi
-    git pull && echo "[+] Repository updated."
-    if [ -z "${1-}" ]; then
-        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
-    else
-        git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
-    fi
-    cd "$DRIVER_DIR"
-    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/KernelSU/kernel")" "kernelsu" && echo "[+] Symlink created."
+    echo "[+] Setting up SukiSU-Ultra (builtin branch)..."
+    
+    # 如果本地还没有 KernelSU 文件夹，则克隆你指定的仓库和 builtin 分支
+    if [ ! -d "$KERNEL_ROOT/KernelSU" ]; then
+        git clone -b builtin https://github.com/KirinNova/SukiSU-Ultra.git KernelSU && echo "[+] Repository cloned successfully."
+    else
+        echo "[+] KernelSU directory already exists, pulling latest changes..."
+        cd "$KERNEL_ROOT/KernelSU"
+        git pull origin builtin && echo "[+] Repository updated."
+        cd "$KERNEL_ROOT"
+    fi
 
-    # Add entries in Makefile and Kconfig if not already existing
-    grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
-    grep -q "source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" && echo "[+] Modified Kconfig."
-    echo '[+] Done.'
+    # 创建驱动软链接
+    cd "$DRIVER_DIR"
+    if [ ! -e "kernelsu" ]; then
+        ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$KERNEL_ROOT/KernelSU/kernel")" "kernelsu" && echo "[+] Symlink created in drivers/."
+    else
+        echo "[+] Symlink already exists."
+    fi
+
+    # 自动向 drivers/Makefile 写入编译条目（如果尚不存在）
+    cd "$KERNEL_ROOT"
+    if ! grep -q "kernelsu" "$DRIVER_MAKEFILE"; then
+        printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE"
+        echo "[+] Added kernelsu to drivers/Makefile."
+    else
+        echo "[+] Makefile entry already exists."
+    fi
+
+    # 自动向 drivers/Kconfig 写入菜单配置（如果尚不存在）
+    if ! grep -q "source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"; then
+        # 尝试在 endmenu 之前插入配置项
+        sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG"
+        echo "[+] Added kernelsu to drivers/Kconfig."
+    else
+        echo "[+] Kconfig entry already exists."
+    fi
+
+    echo '[+] SukiSU-Ultra builtin integration for Android 4.19 is done!'
 }
 
-# Process command-line arguments
+# 命令行参数分发逻辑
 if [ "$#" -eq 0 ]; then
-    initialize_variables
-    setup_kernelsu
+    initialize_variables
+    setup_kernelsu
 elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    display_usage
+    display_usage
 elif [ "$1" = "--cleanup" ]; then
-    initialize_variables
-    perform_cleanup
+    initialize_variables
+    perform_cleanup
 else
-    initialize_variables
-    setup_kernelsu "$@"
+    display_usage
+    exit 1
 fi

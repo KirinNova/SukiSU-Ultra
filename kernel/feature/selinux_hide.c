@@ -44,6 +44,14 @@
 #define __maybe_static static
 #endif
 
+static inline uid_t ksu_get_uid_t(kuid_t uid)
+{
+    return from_kuid(&init_user_ns, uid);
+}
+
+static struct policydb *backup_policydb = NULL;
+static struct sidtab *backup_sidtab = NULL;
+
 static DEFINE_MUTEX(selinux_hide_mutex);
 __maybe_static bool ksu_selinux_hide_enabled __read_mostly = false;
 // remove static in susfs

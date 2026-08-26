@@ -46,7 +46,7 @@
 
 static inline uid_t ksu_get_uid_t(kuid_t uid)
 {
-    return from_kuid(&init_user_ns, uid);
+    return from_kuid(&init_user_ns, uid);
 }
 
 static struct policydb *backup_policydb = NULL;
@@ -54,7 +54,6 @@ static struct sidtab *backup_sidtab = NULL;
 
 static DEFINE_MUTEX(selinux_hide_mutex);
 __maybe_static bool ksu_selinux_hide_enabled __read_mostly = false;
-// remove static in susfs
 __maybe_static bool ksu_selinux_hide_running __read_mostly = false;
 
 #ifdef KSU_COMPAT_USE_STATIC_KEY
@@ -77,80 +76,80 @@ bool ksu_late_loaded = false;
 
 static inline void ksu_destroy_policydb(struct policydb *p)
 {
-    if (p) {
-        kfree(p);
-    }
+    if (p) {
+        kfree(p);
+    }
 }
 
 unsigned long find_kernel_symbol_exact(const char *symbol_name)
 {
-    return kallsyms_lookup_name(symbol_name);
+    return kallsyms_lookup_name(symbol_name);
 }
 
 int ksu_patch_text(void *dst, void *src, size_t len, int flags)
 {
-    return 0;
+    return 0;
 }
 
 #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
 enum sel_inos {
-    SEL_ROOT_INO = 2,
-    SEL_LOAD, /* load policy */
-    SEL_ENFORCE, /* get or set enforcing status */
-    SEL_CONTEXT, /* validate context */
-    SEL_ACCESS, /* compute access decision */
-    SEL_CREATE, /* compute create labeling decision */
-    SEL_RELABEL, /* compute relabeling decision */
-    SEL_USER, /* compute reachable user contexts */
-    SEL_POLICYVERS, /* return policy version for this kernel */
-    SEL_COMMIT_BOOLS, /* commit new boolean values */
-    SEL_MLS, /* return if MLS policy is enabled */
-    SEL_DISABLE, /* disable SELinux until next reboot */
-    SEL_MEMBER, /* compute polyinstantiation membership decision */
-    SEL_CHECKREQPROT, /* check requested protection, not kernel-applied one */
-    SEL_COMPAT_NET, /* whether to use old compat network packet controls */
-    SEL_REJECT_UNKNOWN, /* export unknown reject handling to userspace */
-    SEL_DENY_UNKNOWN, /* export unknown deny handling to userspace */
-    SEL_STATUS, /* export current status using mmap() */
-    SEL_POLICY, /* allow userspace to read the in kernel policy */
-    SEL_VALIDATE_TRANS, /* compute validatetrans decision */
-    SEL_INO_NEXT, /* The next inode number to use */
+    SEL_ROOT_INO = 2,
+    SEL_LOAD, /* load policy */
+    SEL_ENFORCE, /* get or set enforcing status */
+    SEL_CONTEXT, /* validate context */
+    SEL_ACCESS, /* compute access decision */
+    SEL_CREATE, /* compute create labeling decision */
+    SEL_RELABEL, /* compute relabeling decision */
+    SEL_USER, /* compute reachable user contexts */
+    SEL_POLICYVERS, /* return policy version for this kernel */
+    SEL_COMMIT_BOOLS, /* commit new boolean values */
+    SEL_MLS, /* return if MLS policy is enabled */
+    SEL_DISABLE, /* disable SELinux until next reboot */
+    SEL_MEMBER, /* compute polyinstantiation membership decision */
+    SEL_CHECKREQPROT, /* check requested protection, not kernel-applied one */
+    SEL_COMPAT_NET, /* whether to use old compat network packet controls */
+    SEL_REJECT_UNKNOWN, /* export unknown reject handling to userspace */
+    SEL_DENY_UNKNOWN, /* export unknown deny handling to userspace */
+    SEL_STATUS, /* export current status using mmap() */
+    SEL_POLICY, /* allow userspace to read the in kernel policy */
+    SEL_VALIDATE_TRANS, /* compute validatetrans decision */
+    SEL_INO_NEXT, /* The next inode number to use */
 };
 
 typedef ssize_t (*write_op_fn)(struct file *, char *, size_t);
 
 static write_op_fn *selinux_write_op;
-#endif // #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
+#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 __maybe_static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext,
-                                                       u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags);
+                                                       u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags);
 __maybe_static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
-                                                       u32 *scontext_len);
+                                                       u32 *scontext_len);
 __maybe_static void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
-                                                         struct av_decision *avd);
+                                                         struct av_decision *avd);
 static void (*security_dump_masked_av_fn)(struct policydb *policydb, struct context *scontext, struct context *tcontext,
-                                          u16 tclass, u32 permissions, const char *reason) = NULL;
+                                          u16 tclass, u32 permissions, const char *reason) = NULL;
 static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct context *scontext,
-                                            struct context *tcontext, u16 tclass, struct av_decision *avd,
-                                            struct extended_perms *xperms) = NULL;
+                                            struct context *tcontext, u16 tclass, struct av_decision *avd,
+                                            struct extended_perms *xperms) = NULL;
 #elif defined(KSU_COMPAT_USE_SELINUX_STATE)
 __maybe_static struct selinux_state fake_state;
 #else
 static int dump_masked_av_helper(void *k, void *d, void *args);
 static int context_struct_to_string(struct context *context, char **scontext, u32 *scontext_len);
 static void context_struct_compute_av(struct context *scontext, struct context *tcontext, u16 tclass,
-                                      struct av_decision *avd, struct extended_perms *xperms);
+                                      struct av_decision *avd, struct extended_perms *xperms);
 static void security_dump_masked_av(struct context *scontext, struct context *tcontext, u16 tclass, u32 permissions,
-                                    const char *reason);
+                                    const char *reason);
 static int constraint_expr_eval(struct context *scontext, struct context *tcontext, struct context *xcontext,
-                                struct constraint_expr *cexpr);
+                                struct constraint_expr *cexpr);
 static void type_attribute_bounds_av(struct context *scontext, struct context *tcontext, u16 tclass,
-                                     struct av_decision *avd);
+                                     struct av_decision *avd);
 static void avd_init(struct av_decision *avd);
 static inline u32 current_sid(void);
 static int string_to_context_struct(struct policydb *pol, struct sidtab *sidtabp, char *scontext, u32 scontext_len,
-                                    struct context *ctx, u32 def_sid);
+                                    struct context *ctx, u32 def_sid);
 static int ksu_security_context_to_sid(const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp_flags);
 static int ksu_security_context_str_to_sid(const char *scontext, u32 *sid, gfp_t gfp);
 static int ksu_security_sid_to_context(u32 sid, char **scontext, u32 *scontext_len);
@@ -466,7 +465,7 @@ extern void ksu_register_setprocattr_lsm_hook(void);
 #define ksu_selinux_hide_unhook()                                                                                      \
     do {                                                                                                               \
     } while (0)
-#endif // #ifndef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
+#endif
 
 static int ksu_selinux_hide_enable(void)
 {

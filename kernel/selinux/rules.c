@@ -1,3 +1,19 @@
+#include <linux/version.h>
+#include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/rcupdate.h>
+#include <linux/slab.h>
+#include <linux/stop_machine.h>
+#include <linux/kthread.h>
+#include <linux/uaccess.h>
+#include <linux/namei.h>
+#include <linux/security.h>
+
+#include "klog.h" // // older ksu uses "ksu.h" or similar, keep your includes if they differ
+#include "selinux.h"
+#include "policy.h"
+#include "common.h"
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 #define SELINUX_POLICY_INSTEAD_SELINUX_SS
 struct selinux_policy *backup_sepolicy;
@@ -211,12 +227,6 @@ out_unlock:
     if (!lock)
         goto do_stop_machine;
 
-    /*
-	 * HACK: write_lock() is held with preempt enabled. DO NOT let the
-	 * task be migrated to any other CPU than the current CPU. And since
-	 * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
-	 * current CPU and bypass preemption checks.
-	 */
     cpumask_copy(&old_mask, ksu_get_current_cpumask_t());
     set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
 
@@ -224,7 +234,6 @@ out_unlock:
     write_lock(lock);
     preempt_enable();
 
-    // we do this dance since both kernel and userspace can trigger this
     if (likely(current && current->mm))
         goto has_current_mm;
 
@@ -232,14 +241,13 @@ out_unlock:
     goto out_unlock;
 
 has_current_mm:;
-    // HACK: raise priority of this to the heavens
     int old_policy = current->policy;
     struct sched_param old_param = { .sched_priority = current->rt_priority };
     struct sched_param new_param = { .sched_priority = 50 };
 
-    sched_setscheduler_nocheck(current, 1, &new_param); // raise, fifo, 50
+    sched_setscheduler_nocheck(current, 1, &new_param);
     apply_kernelsu_rules_fn((void *)db);
-    sched_setscheduler_nocheck(current, old_policy, &old_param); // restore
+    sched_setscheduler_nocheck(current, old_policy, &old_param);
 
 out_unlock:
     preempt_disable();
@@ -254,6 +262,9 @@ do_stop_machine:
 out_flush:
     smp_mb();
     reset_avc_cache();
+#ifdef CONFIG_KSU_SUSFS
+    susfs_set_batch_sid();
+#endif
 #endif
 }
 
@@ -613,6 +624,9 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
     ksu_destroy_sepolicy(old_pol);
 
     reset_avc_cache();
+#ifdef CONFIG_KSU_SUSFS
+    susfs_set_batch_sid();
+#endif
     ret = success_cmd_count;
     goto out_unlock;
 
@@ -727,11 +741,11 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
         goto do_stop_machine;
 
     /*
-	 * HACK: write_lock() is held with preempt enabled. DO NOT let the
-	 * task be migrated to any other CPU than the current CPU. And since
-	 * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
-	 * current CPU and bypass preemption checks.
-	 */
+     * HACK: write_lock() is held with preempt enabled. DO NOT let the
+     * task be migrated to any other CPU than the current CPU. And since
+     * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
+     * current CPU and bypass preemption checks.
+     */
     cpumask_copy(&old_mask, ksu_get_current_cpumask_t());
     set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
 
@@ -768,6 +782,9 @@ out_done:
 
     smp_mb();
     reset_avc_cache();
+#ifdef CONFIG_KSU_SUSFS
+    susfs_set_batch_sid();
+#endif
     ret = success_cmd_count;
 
 out_free:

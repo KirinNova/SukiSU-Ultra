@@ -267,14 +267,23 @@ static int do_uid_should_umount(void __user *arg)
 
 static int do_get_manager_appid(void __user *arg)
 {
-    struct ksu_get_manager_appid_cmd cmd;
-
-    cmd.appid = ksu_get_manager_appid();
-
-    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+    uid_t uid = ksu_get_manager_uid();
+    if (copy_to_user(arg, &uid, sizeof(uid))) {
         pr_err("get_manager_appid: copy_to_user failed\n");
         return -EFAULT;
     }
+    return 0;
+}
+
+#define KSU_APP_PROFILE_SIZE_V2_V3 776U
+
+static size_t app_profile_userspace_size(u32 version)
+{
+    if (version == 2 || version == 3)
+        return KSU_APP_PROFILE_SIZE_V2_V3;
+
+    if (version == KSU_APP_PROFILE_VER)
+        return sizeof(struct app_profile);
 
     return 0;
 }
@@ -282,13 +291,33 @@ static int do_get_manager_appid(void __user *arg)
 static int do_get_app_profile(void __user *arg)
 {
     uid_t uid;
+    u32 requested_version;
+    size_t profile_size;
     struct app_profile *profile;
+    struct app_profile compat_profile;
+    const struct app_profile *out_profile;
     int ret = 0;
+
+    if (copy_from_user(&requested_version,
+                       (char __user *)arg +
+                       offsetof(struct ksu_get_app_profile_cmd,
+                                profile.version),
+                       sizeof(requested_version))) {
+        pr_err("get_app_profile: copy profile version from user failed\n");
+        return -EFAULT;
+    }
 
     if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
                        sizeof(uid_t))) {
         pr_err("get_app_profile: copy_from_user failed\n");
         return -EFAULT;
+    }
+
+    profile_size = app_profile_userspace_size(requested_version);
+    if (!profile_size) {
+        pr_err("get_app_profile: unsupported profile version: %u\n",
+               requested_version);
+        return -EINVAL;
     }
 
     rcu_read_lock();
@@ -297,8 +326,16 @@ static int do_get_app_profile(void __user *arg)
     if (!profile) {
         ret = -ENOENT;
     } else {
-        if (copy_to_user((char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile), profile,
-                         sizeof(struct app_profile))) {
+        out_profile = profile;
+        if (profile_size < sizeof(struct app_profile)) {
+            memcpy(&compat_profile, profile, sizeof(compat_profile));
+            compat_profile.version = requested_version;
+            out_profile = &compat_profile;
+        }
+
+        if (copy_to_user((char __user *)arg +
+                         offsetof(struct ksu_get_app_profile_cmd, profile),
+                         out_profile, profile_size)) {
             pr_err("get_app_profile: copy_to_user failed\n");
             ret = -EFAULT;
         }
@@ -309,10 +346,31 @@ static int do_get_app_profile(void __user *arg)
 
 static int do_set_app_profile(void __user *arg)
 {
-    struct ksu_set_app_profile_cmd cmd;
+    struct ksu_set_app_profile_cmd cmd = { 0 };
+    u32 version;
+    size_t profile_size;
     int ret;
 
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+    if (copy_from_user(&version,
+                       (char __user *)arg +
+                       offsetof(struct ksu_set_app_profile_cmd,
+                                profile.version),
+                       sizeof(version))) {
+        pr_err("set_app_profile: copy profile version from user failed\n");
+        return -EFAULT;
+    }
+
+    profile_size = app_profile_userspace_size(version);
+    if (!profile_size) {
+        pr_err("set_app_profile: unsupported profile version: %u\n",
+               version);
+        return -EINVAL;
+    }
+
+    if (copy_from_user(&cmd.profile,
+                       (char __user *)arg +
+                       offsetof(struct ksu_set_app_profile_cmd, profile),
+                       profile_size)) {
         pr_err("set_app_profile: copy_from_user failed\n");
         return -EFAULT;
     }

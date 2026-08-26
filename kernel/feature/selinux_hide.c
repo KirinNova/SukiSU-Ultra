@@ -37,7 +37,7 @@
 #include "selinux/selinux.h"
 #include "selinux/sepolicy.h"
 #include "selinux_hide.h"
-#include "compat/kernel_compat.h"
+#include "../compat/kernel_compat.h"
 
 #ifdef KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE
 #define __maybe_static

@@ -82,9 +82,9 @@ static inline void ksu_destroy_policydb(struct policydb *p)
     }
 }
 
-void *find_kernel_symbol_exact(const char *symbol_name)
+unsigned long find_kernel_symbol_exact(const char *symbol_name)
 {
-    return (void *)kallsyms_lookup_name(symbol_name);
+    return kallsyms_lookup_name(symbol_name);
 }
 
 int ksu_patch_text(void *dst, void *src, size_t len, int flags)

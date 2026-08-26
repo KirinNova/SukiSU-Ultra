@@ -198,6 +198,7 @@ void apply_kernelsu_rules(void)
 
     reset_avc_cache();
 #ifdef CONFIG_KSU_SUSFS
+    /* Run for both modern and legacy SELinux policy update paths. */
     susfs_set_batch_sid();
 #endif
 out_unlock:
